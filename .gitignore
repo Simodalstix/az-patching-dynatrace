@@ -1,0 +1,17 @@
+# .gitignore
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Terraform sensitive variable definitions
+*.tfvars
+*.tfvars.json
+
+# Terraform crash log files
+crash.log
+
+# Other
+.DS_Store # macOS specific
+.vscode/ # VS Code settings, if you don't want to share them
