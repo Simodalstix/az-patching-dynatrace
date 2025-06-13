@@ -22,6 +22,7 @@ terraform {
 
 provider "azurerm" {
   features {} # This block is required for the AzureRM provider
+  subscription_id = "b86a521f-c7a0-48c6-a0eb-f0d96d10f8ab"
 }
 
 # Add AzureAD provider for RBAC (only if you intend to fetch AAD groups/users)
@@ -268,13 +269,13 @@ resource "azurerm_linux_virtual_machine" "rhel_vm" {
   os_disk {
     caching              = "ReadWrite"
     storage_account_type = "Standard_LRS"
-    disk_size_gb         = 30
+    disk_size_gb         = 64
   }
 
   source_image_reference {
     publisher = "RedHat"
     offer     = "RHEL"
-    sku       = "8-LVM" # Or "9-lvm" for RHEL 9
+    sku       = "9-LVM"
     version   = "latest"
   }
 
@@ -331,13 +332,17 @@ resource "random_password" "windows_admin_password" {
 }
 
 resource "azurerm_windows_virtual_machine" "windows_vm" {
-  name                     = "win-vm-${var.project_prefix}-app01"
+  name                     = "win-vm-${var.project_prefix}-app01" # This is the Azure resource name
   resource_group_name      = azurerm_resource_group.rg_patch_lab.name
   location                 = azurerm_resource_group.rg_patch_lab.location
   size                     = "Standard_B2ms" # More memory for app server
   admin_username           = var.windows_admin_username
   admin_password           = random_password.windows_admin_password.result
   enable_automatic_updates = false # We want to control patching via Azure Update Management
+
+  # Fix for computer_name length: Explicitly set the internal computer name
+  computer_name = "win${var.project_prefix}01" # ENSURE THIS IS 15 CHARS OR LESS
+  # Example: if project_prefix="patchlab", this becomes "winpatchlab01" (13 chars)
 
   network_interface_ids = [
     azurerm_network_interface.nic_windows.id,
@@ -346,7 +351,7 @@ resource "azurerm_windows_virtual_machine" "windows_vm" {
   os_disk {
     caching              = "ReadWrite"
     storage_account_type = "Standard_LRS"
-    disk_size_gb         = 60
+    disk_size_gb         = 60 # This disk size should be fine for Windows 2019/2022
   }
 
   source_image_reference {
@@ -404,46 +409,71 @@ resource "azurerm_log_analytics_workspace" "log_workspace" {
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
 
-# Enable VM Insights for all VMs using a Data Collection Rule
+# --- Data Collection Endpoint (DCE) ---
+# A Data Collection Endpoint is required for Azure Monitor Agent (AMA)
+# to ingest data using Data Collection Rules.
+resource "azurerm_monitor_data_collection_endpoint" "vm_insights_dce" {
+  name                          = "dce-${var.project_prefix}-vmi"
+  resource_group_name           = azurerm_resource_group.rg_patch_lab.name
+  location                      = azurerm_resource_group.rg_patch_lab.location
+  public_network_access_enabled = true # Set to false if using Private Link/VNet integration
+
+  # You might want to add tags here as well
+  tags = azurerm_resource_group.rg_patch_lab.tags
+}
+
+
 resource "azurerm_monitor_data_collection_rule" "vm_insights_dcr" {
   name                = "dcr-${var.project_prefix}-vmi"
   resource_group_name = azurerm_resource_group.rg_patch_lab.name
   location            = azurerm_resource_group.rg_patch_lab.location
-  kind                = "Linux" # This DCR type is generally for Linux, but can apply to Windows with right data sources.
-  # For a real prod setup, you might have separate DCRs or a DCR for both if supported
-  # by the chosen data sources. For basic VM Insights, this should work.
 
-  # Define data streams and their destinations
+  description = "DCR for VM Insights data collection for ${var.project_prefix} lab."
+
   data_flow {
-    streams      = ["Microsoft-InsightsMetrics", "Microsoft-Perf", "Microsoft-Syslog", "Microsoft-WindowsEvent"]
-    destinations = ["log_analytics_workspace"]
+    streams      = ["Microsoft-Heartbeat", "Microsoft-Perf", "Microsoft-Syslog", "Microsoft-WindowsEvent", "Microsoft-InsightsMetrics"]
+    destinations = ["log_analytics_destination"]
   }
 
-  # Define data sources (what data to collect)
   data_sources {
     performance_counter {
-      name                          = "BuiltInPerformanceCounters"
+      name                          = "vminsights-PerfCounters"
       streams                       = ["Microsoft-Perf"]
       sampling_frequency_in_seconds = 60
-      counter_specifiers            = ["\\Processor(_Total)\\% Processor Time", "\\Memory\\Available Bytes", "\\LogicalDisk(_Total)\\% Free Space"]
+      counter_specifiers = [
+        "\\Processor(_Total)\\% Processor Time",
+        "\\Memory\\Available MBytes",
+        "\\LogicalDisk(_Total)\\% Free Space",
+        "\\LogicalDisk(_Total)\\Avg. Disk sec/Read",
+        "\\LogicalDisk(_Total)\\Avg. Disk sec/Write",
+        "\\Network Interface(*)\\Bytes Total/sec"
+      ]
     }
+
     syslog {
-      name           = "BuiltInSyslog"
+      name           = "vminsights-Syslog"
       streams        = ["Microsoft-Syslog"]
-      facility_names = ["auth", "daemon", "syslog"]
-      log_levels     = ["Critical", "Error", "Warning", "Info"]
+      facility_names = ["auth", "authpriv", "cron", "daemon", "mark", "kern", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7", "lpr", "mail", "news", "syslog", "user", "uucp"]
+      log_levels     = ["Alert", "Critical", "Emergency", "Error", "Info", "Notice", "Warning"]
     }
+
     windows_event_log {
-      name           = "BuiltInWindowsEvents"
+      name           = "vminsights-WinEvents"
       streams        = ["Microsoft-WindowsEvent"]
-      x_path_queries = ["Application!*", "Security!*", "System!*"]
+      x_path_queries = ["Event!*[System[(Level=1 or Level=2 or Level=3)]]"]
+    }
+
+    extension {
+      name           = "vminsights-Extension"
+      streams        = ["Microsoft-Heartbeat", "Microsoft-InsightsMetrics"]
+      extension_name = "MicrosoftMonitoringAgent"
+
     }
   }
 
-  # Define destinations (where to send the data)
   destinations {
     log_analytics {
-      name                  = "log_analytics_workspace"
+      name                  = "log_analytics_destination"
       workspace_resource_id = azurerm_log_analytics_workspace.log_workspace.id
     }
   }
@@ -451,22 +481,6 @@ resource "azurerm_monitor_data_collection_rule" "vm_insights_dcr" {
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
 
-# Associate RHEL VMs with the Data Collection Rule
-resource "azurerm_monitor_data_collection_rule_association" "vm_insights_association_rhel" {
-  count                   = var.rhel_vm_count
-  name                    = "dcr-association-rhel-${format("%02d", count.index + 1)}"
-  target_resource_id      = azurerm_linux_virtual_machine.rhel_vm[count.index].id
-  data_collection_rule_id = azurerm_monitor_data_collection_rule.vm_insights_dcr.id
-  description             = "Association for VM Insights on RHEL VM"
-}
-
-# Associate Windows VM with the Data Collection Rule
-resource "azurerm_monitor_data_collection_rule_association" "vm_insights_association_windows" {
-  name                    = "dcr-association-windows-01"
-  target_resource_id      = azurerm_windows_virtual_machine.windows_vm.id
-  data_collection_rule_id = azurerm_monitor_data_collection_rule.vm_insights_dcr.id
-  description             = "Association for VM Insights on Windows VM"
-}
 
 
 # --- RBAC Control (Example: Assigning a role to a user or service principal) ---
@@ -510,21 +524,14 @@ resource "azurerm_role_assignment" "monitoring_reader_role" {
 # You will still need to use the Azure Portal's Update Management Center to define patch schedules
 # and target your VMs for compliance and deployment.
 
-resource "azurerm_policy_assignment" "vm_update_assessment_policy" {
-  name  = "Enable-VM-Update-Assessment-For-${var.project_prefix}"
-  scope = azurerm_resource_group.rg_patch_lab.id # Assign to this resource group
-  # Policy Definition ID for "Configure machines to receive Azure automatic VM guest OS patches by platform"
+resource "azurerm_resource_group_policy_assignment" "vm_update_assessment_policy" {
+  name                 = "Enable-VM-Update-Assessment-For-${var.project_prefix}"
+  resource_group_id    = azurerm_resource_group.rg_patch_lab.id # CORRECTED: Assign to this specific resource group
   policy_definition_id = "/providers/Microsoft.Authorization/policyDefinitions/8a42f63f-67a5-4b05-924b-325d0c2e3915"
   display_name         = "Configure machines to receive Azure automatic VM guest OS patches by platform for ${var.project_prefix} Lab"
   description          = "Assigns a policy to enable automatic VM guest OS patching assessment for this lab environment."
 
   parameters = jsonencode({
-    # Set this parameter to control the behavior:
-    # "Audit": Just reports non-compliance, doesn't enforce patching.
-    # "ApplyAndAutoCorrect": Enforces patching automatically based on Azure's schedule.
-    # "Disabled": Disables the effect.
-    # For demonstrating manual control via UMC, "Audit" is a good start.
-    # If you want to show Azure doing it, use "ApplyAndAutoCorrect".
     "assignmentType" = {
       "value" = "Audit" # Change to "ApplyAndAutoCorrect" to have Azure automatically patch
     }
