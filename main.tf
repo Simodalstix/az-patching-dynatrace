@@ -340,8 +340,7 @@ resource "azurerm_windows_virtual_machine" "windows_vm" {
   admin_password           = random_password.windows_admin_password.result
   enable_automatic_updates = false # We want to control patching via Azure Update Management
 
-  # Fix for computer_name length: Explicitly set the internal computer name
-  computer_name = "win${var.project_prefix}01" # ENSURE THIS IS 15 CHARS OR LESS
+  computer_name = "win${var.project_prefix}01"
   # Example: if project_prefix="patchlab", this becomes "winpatchlab01" (13 chars)
 
   network_interface_ids = [
@@ -351,7 +350,7 @@ resource "azurerm_windows_virtual_machine" "windows_vm" {
   os_disk {
     caching              = "ReadWrite"
     storage_account_type = "Standard_LRS"
-    disk_size_gb         = 60 # This disk size should be fine for Windows 2019/2022
+    disk_size_gb         = 128
   }
 
   source_image_reference {
@@ -399,6 +398,23 @@ resource "azurerm_network_interface" "nic_windows" {
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
 
+# --- Associate RHEL VMs with the Data Collection Rule ---
+resource "azurerm_monitor_data_collection_rule_association" "rhel_dcr_association" {
+  count                   = var.rhel_vm_count
+  name                    = "dcr-assc-rhel-vm-${format("%02d", count.index + 1)}"
+  target_resource_id      = azurerm_linux_virtual_machine.rhel_vm[count.index].id
+  data_collection_rule_id = azurerm_monitor_data_collection_rule.vm_insights_dcr.id
+  description             = "Association for RHEL VM ${count.index + 1} to VM Insights DCR."
+}
+
+# --- Associate Windows VM with the Data Collection Rule ---
+resource "azurerm_monitor_data_collection_rule_association" "windows_dcr_association" {
+  name                    = "dcr-assc-windows-vm-${var.project_prefix}" # Added project_prefix for uniqueness
+  target_resource_id      = azurerm_windows_virtual_machine.windows_vm.id
+  data_collection_rule_id = azurerm_monitor_data_collection_rule.vm_insights_dcr.id
+  description             = "Association for Windows VM to VM Insights DCR."
+}
+
 # --- Azure Monitor: Log Analytics Workspace and VM Insights ---
 resource "azurerm_log_analytics_workspace" "log_workspace" {
   name                = "law-${var.project_prefix}-monitoring"
@@ -421,7 +437,6 @@ resource "azurerm_monitor_data_collection_endpoint" "vm_insights_dce" {
   # You might want to add tags here as well
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
-
 
 resource "azurerm_monitor_data_collection_rule" "vm_insights_dcr" {
   name                = "dcr-${var.project_prefix}-vmi"
@@ -463,24 +478,33 @@ resource "azurerm_monitor_data_collection_rule" "vm_insights_dcr" {
       x_path_queries = ["Event!*[System[(Level=1 or Level=2 or Level=3)]]"]
     }
 
+    # CRITICAL FIXES BASED ON YOUR PROVIDED DOCS:
+    # 1. Using `extension_json` instead of `extension_settings_json`.
+    # 2. Removing `input_enabled`.
+    # 3. Configuring the AMA with the DCE and DCR rule ID via `extension_json`.
     extension {
       name           = "vminsights-Extension"
       streams        = ["Microsoft-Heartbeat", "Microsoft-InsightsMetrics"]
-      extension_name = "MicrosoftMonitoringAgent"
-
+      extension_name = "MicrosoftMonitoringAgent" # This is the Azure Monitor Agent
+      extension_json = jsonencode({
+        "dataCollectionEndpoint" = {
+          "endpoint" = azurerm_monitor_data_collection_endpoint.vm_insights_dce.logs_ingestion_endpoint
+        }
+      })
+      # input_data_sources can be added here if needed to specify which other data sources feed this extension
+      # e.g., input_data_sources = ["vminsights-PerfCounters", "vminsights-WinEvents"]
     }
-  }
+  } # End of data_sources block
 
   destinations {
     log_analytics {
       name                  = "log_analytics_destination"
       workspace_resource_id = azurerm_log_analytics_workspace.log_workspace.id
     }
-  }
+  } # End of destinations block
 
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
-
 
 
 # --- RBAC Control (Example: Assigning a role to a user or service principal) ---
