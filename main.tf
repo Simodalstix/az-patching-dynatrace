@@ -332,16 +332,17 @@ resource "random_password" "windows_admin_password" {
 }
 
 resource "azurerm_windows_virtual_machine" "windows_vm" {
-  name                     = "win-vm-${var.project_prefix}-app01" # This is the Azure resource name
-  resource_group_name      = azurerm_resource_group.rg_patch_lab.name
-  location                 = azurerm_resource_group.rg_patch_lab.location
-  size                     = "Standard_B2ms" # More memory for app server
-  admin_username           = var.windows_admin_username
-  admin_password           = random_password.windows_admin_password.result
-  enable_automatic_updates = false # We want to control patching via Azure Update Management
+  name                = "win-vm-${var.project_prefix}-app01"
+  resource_group_name = azurerm_resource_group.rg_patch_lab.name
+  location            = azurerm_resource_group.rg_patch_lab.location
+  size                = "Standard_B2ms"
+  admin_username      = var.windows_admin_username
+  admin_password      = random_password.windows_admin_password.result
+  # enable_automatic_updates = false # REMOVE OR COMMENT OUT THIS LINE - it's deprecated and conflicts
+
+  patch_mode = "AutomaticByPlatform" # ADD THIS LINE - this is the key fix
 
   computer_name = "win${var.project_prefix}01"
-  # Example: if project_prefix="patchlab", this becomes "winpatchlab01" (13 chars)
 
   network_interface_ids = [
     azurerm_network_interface.nic_windows.id,
@@ -360,7 +361,6 @@ resource "azurerm_windows_virtual_machine" "windows_vm" {
     version   = "latest"
   }
 
-  # Dynatrace OneAgent Deployment (Conceptual via Custom Data)
   custom_data = base64encode(templatefile("${path.module}/scripts/install_dynatrace_windows.ps1", {
     dynatrace_environment_url = var.dynatrace_environment_url
     dynatrace_api_token       = var.dynatrace_api_token
@@ -437,73 +437,43 @@ resource "azurerm_monitor_data_collection_endpoint" "vm_insights_dce" {
   # You might want to add tags here as well
   tags = azurerm_resource_group.rg_patch_lab.tags
 }
-
 resource "azurerm_monitor_data_collection_rule" "vm_insights_dcr" {
-  name                = "dcr-${var.project_prefix}-vmi"
-  resource_group_name = azurerm_resource_group.rg_patch_lab.name
-  location            = azurerm_resource_group.rg_patch_lab.location
+  name                        = "dcr-${var.project_prefix}-vmi"
+  resource_group_name         = azurerm_resource_group.rg_patch_lab.name
+  location                    = azurerm_resource_group.rg_patch_lab.location
+  data_collection_endpoint_id = azurerm_monitor_data_collection_endpoint.vm_insights_dce.id
 
-  description = "DCR for VM Insights data collection for ${var.project_prefix} lab."
+  destinations {
+    log_analytics {
+      # Change this line:
+      workspace_resource_id = azurerm_log_analytics_workspace.log_workspace.id # <-- CHANGED FROM .log_analytics_workspace
+      name                  = "log_analytics_destination"
+    }
+  }
 
   data_flow {
-    streams      = ["Microsoft-Heartbeat", "Microsoft-Perf", "Microsoft-Syslog", "Microsoft-WindowsEvent", "Microsoft-InsightsMetrics"]
+    streams      = ["Microsoft-Heartbeat", "Microsoft-InsightsMetrics"]
     destinations = ["log_analytics_destination"]
   }
 
   data_sources {
     performance_counter {
-      name                          = "vminsights-PerfCounters"
-      streams                       = ["Microsoft-Perf"]
+      name                          = "MinimalPerfCounters"
+      streams                       = ["Microsoft-InsightsMetrics"]
       sampling_frequency_in_seconds = 60
-      counter_specifiers = [
-        "\\Processor(_Total)\\% Processor Time",
-        "\\Memory\\Available MBytes",
-        "\\LogicalDisk(_Total)\\% Free Space",
-        "\\LogicalDisk(_Total)\\Avg. Disk sec/Read",
-        "\\LogicalDisk(_Total)\\Avg. Disk sec/Write",
-        "\\Network Interface(*)\\Bytes Total/sec"
-      ]
+      counter_specifiers            = ["\\Processor(_Total)\\% Processor Time"]
     }
+  }
 
-    syslog {
-      name           = "vminsights-Syslog"
-      streams        = ["Microsoft-Syslog"]
-      facility_names = ["auth", "authpriv", "cron", "daemon", "mark", "kern", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7", "lpr", "mail", "news", "syslog", "user", "uucp"]
-      log_levels     = ["Alert", "Critical", "Emergency", "Error", "Info", "Notice", "Warning"]
-    }
+  tags = {
 
-    windows_event_log {
-      name           = "vminsights-WinEvents"
-      streams        = ["Microsoft-WindowsEvent"]
-      x_path_queries = ["Event!*[System[(Level=1 or Level=2 or Level=3)]]"]
-    }
+    Project = var.project_prefix
+  }
 
-    # CRITICAL FIXES BASED ON YOUR PROVIDED DOCS:
-    # 1. Using `extension_json` instead of `extension_settings_json`.
-    # 2. Removing `input_enabled`.
-    # 3. Configuring the AMA with the DCE and DCR rule ID via `extension_json`.
-    extension {
-      name           = "vminsights-Extension"
-      streams        = ["Microsoft-Heartbeat", "Microsoft-InsightsMetrics"]
-      extension_name = "MicrosoftMonitoringAgent" # This is the Azure Monitor Agent
-      extension_json = jsonencode({
-        "dataCollectionEndpoint" = {
-          "endpoint" = azurerm_monitor_data_collection_endpoint.vm_insights_dce.logs_ingestion_endpoint
-        }
-      })
-      # input_data_sources can be added here if needed to specify which other data sources feed this extension
-      # e.g., input_data_sources = ["vminsights-PerfCounters", "vminsights-WinEvents"]
-    }
-  } # End of data_sources block
-
-  destinations {
-    log_analytics {
-      name                  = "log_analytics_destination"
-      workspace_resource_id = azurerm_log_analytics_workspace.log_workspace.id
-    }
-  } # End of destinations block
-
-  tags = azurerm_resource_group.rg_patch_lab.tags
+  depends_on = [
+    azurerm_log_analytics_workspace.log_workspace, # <-- CHANGED FROM .log_analytics_workspace
+    azurerm_monitor_data_collection_endpoint.vm_insights_dce
+  ]
 }
 
 
@@ -551,13 +521,19 @@ resource "azurerm_role_assignment" "monitoring_reader_role" {
 resource "azurerm_resource_group_policy_assignment" "vm_update_assessment_policy" {
   name                 = "Enable-VM-Update-Assessment-For-${var.project_prefix}"
   resource_group_id    = azurerm_resource_group.rg_patch_lab.id # CORRECTED: Assign to this specific resource group
-  policy_definition_id = "/providers/Microsoft.Authorization/policyDefinitions/8a42f63f-67a5-4b05-924b-325d0c2e3915"
+  policy_definition_id = "/providers/Microsoft.Authorization/policyDefinitions/59efceea-0c96-497e-a4a1-4eb2290dac15"
   display_name         = "Configure machines to receive Azure automatic VM guest OS patches by platform for ${var.project_prefix} Lab"
   description          = "Assigns a policy to enable automatic VM guest OS patching assessment for this lab environment."
 
-  parameters = jsonencode({
-    "assignmentType" = {
-      "value" = "Audit" # Change to "ApplyAndAutoCorrect" to have Azure automatically patch
-    }
-  })
+  location = azurerm_resource_group.rg_patch_lab.location # Or a specific region string like "australiaeast"
+  identity {
+    type = "SystemAssigned" # System-assigned managed identity
+  }
+
+
+}
+resource "azurerm_role_assignment" "policy_assignment_contributor_role" {
+  scope                = azurerm_resource_group.rg_patch_lab.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_resource_group_policy_assignment.vm_update_assessment_policy.identity[0].principal_id
 }
