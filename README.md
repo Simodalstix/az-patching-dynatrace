@@ -1,4 +1,4 @@
-# Azure PatchLab Infrastructure 🚀
+# Azure PatchLab Infrastructure
 
 This project provisions a complete Azure lab environment designed for patching, monitoring, and observability use cases. It includes:
 
