@@ -9,7 +9,7 @@ variable "location" {
 variable "project_prefix" {
   description = "A short prefix for resource naming to ensure uniqueness and organization."
   type        = string
-  default     = "patchlab"
+  default     = "simo"
 }
 
 variable "resource_group_name" {
@@ -18,11 +18,6 @@ variable "resource_group_name" {
   default     = "rg-patchlab-infra"
 }
 
-variable "environment_tag" {
-  description = "The environment tag for resources (e.g., Dev, Test, Prod)."
-  type        = string
-  default     = "Dev"
-}
 
 variable "vnet_address_space" {
   description = "The address space for the virtual network."
@@ -45,7 +40,7 @@ variable "subnet_app_address_prefix" {
 variable "rhel_vm_count" {
   description = "Number of RHEL virtual machines to create."
   type        = number
-  default     = 2 # As requested, 2 RHEL VMs for the web tier
+  default     = 2 # 2 RHEL VMs for the web tier
 }
 
 variable "linux_admin_username" {
@@ -58,7 +53,7 @@ variable "linux_admin_password_prefix" {
   description = "Password prefix for Linux VMs. A random suffix will be added."
   type        = string
   sensitive   = true
-  default     = "YourComplexP@ssw0rd" # CHANGE ME to a strong password prefix
+  default     = ""
 }
 
 variable "windows_admin_username" {
@@ -70,20 +65,20 @@ variable "windows_admin_username" {
 variable "allowed_source_ip_for_ssh" {
   description = "Your public IP address or CIDR range allowed for SSH access. IMPORTANT: Replace 0.0.0.0/0 with your actual IP for security."
   type        = string
-  default     = "0.0.0.0/0" # WARNING: Insecure for production. Replace with your actual public IP/range.
+  default     = "0.0.0.0/0" # WARNING: Insecure for production. Replace with actual public IP/range.
 }
 
 variable "allowed_source_ip_for_rdp" {
   description = "Your public IP address or CIDR range allowed for RDP access. IMPORTANT: Replace 0.0.0.0/0 with your actual IP for security."
   type        = string
-  default     = "0.0.0.0/0" # WARNING: Insecure for production. Replace with your actual public IP/range.
+  default     = "0.0.0.0/0" # WARNING: Insecure for production. Replace with actual public IP/range.
 }
 
 variable "dynatrace_environment_url" {
   description = "Your Dynatrace Environment URL (e.g., https://yourtenant.live.dynatrace.com)."
   type        = string
   sensitive   = true
-  default     = "" # Set this in your terraform.tfvars or environment variables
+  default     = ""
 }
 
 variable "dynatrace_api_token" {
@@ -93,6 +88,10 @@ variable "dynatrace_api_token" {
   default     = "" # Set this in your terraform.tfvars or environment variables
 }
 
+variable "environment" {
+  type    = string
+  default = "dev"
+}
 # Optional: For RBAC demonstration
 /*
 variable "rbac_lab_user_upn" {

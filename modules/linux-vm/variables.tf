@@ -1,0 +1,13 @@
+variable "vm_count" {}
+variable "name_prefix" {}
+variable "resource_group_name" {}
+variable "location" {}
+variable "size" {}
+variable "admin_username" {}
+variable "admin_password" {}
+variable "avset_id" {}
+variable "nic_ids" {}
+variable "disk_size" {}
+variable "dynatrace_environment_url" {}
+variable "dynatrace_api_token" {}
+variable "tags" {}
