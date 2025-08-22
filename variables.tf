@@ -88,6 +88,12 @@ variable "dynatrace_api_token" {
   default     = "" # Set this in your terraform.tfvars or environment variables
 }
 
+variable "alert_email" {
+  description = "Email address for monitoring alerts"
+  type        = string
+  default     = "admin@example.com"
+}
+
 variable "environment" {
   type    = string
   default = "dev"

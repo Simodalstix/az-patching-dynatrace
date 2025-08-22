@@ -59,11 +59,41 @@ resource "azurerm_monitor_data_collection_rule_association" "this" {
   description             = "Auto-associated via monitoring module"
 }
 
-resource "azurerm_monitor_data_collection_rule_association" "linux_vm" {
-  for_each = { for idx, vm_id in var.vm_ids : idx => vm_id }
+# Action Group for Alerts
+resource "azurerm_monitor_action_group" "main" {
+  name                = "ag-${var.project_prefix}-alerts"
+  resource_group_name = var.resource_group_name
+  short_name          = "patchlab"
 
-  name                    = "dcr-association-linux-vm-${each.key}"
-  target_resource_id      = each.value
-  data_collection_rule_id = azurerm_monitor_data_collection_rule.this.id
-  description             = "Association of Linux VM ${each.key} to VM Insights DCR"
+  email_receiver {
+    name          = "admin"
+    email_address = var.alert_email
+  }
+
+  tags = var.tags
+}
+
+# CPU Alert Rule
+resource "azurerm_monitor_metric_alert" "cpu_alert" {
+  name                = "alert-${var.project_prefix}-high-cpu"
+  resource_group_name = var.resource_group_name
+  scopes              = var.vm_ids
+  description         = "High CPU usage alert"
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.Compute/virtualMachines"
+    metric_name      = "Percentage CPU"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.main.id
+  }
+
+  tags = var.tags
 }

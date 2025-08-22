@@ -23,3 +23,9 @@ variable "tags" {
   default     = {}
   description = "Optional tags to apply to all resources"
 }
+
+variable "alert_email" {
+  type        = string
+  description = "Email address for alerts"
+  default     = "admin@example.com"
+}
